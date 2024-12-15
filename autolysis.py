@@ -11,130 +11,112 @@
 # ]
 # ///
 
+
+
 import os
 import pandas as pd
-import seaborn as sns
 import matplotlib.pyplot as plt
-import openai
-import requests
-import json
-import numpy as np
+import seaborn as sns
+from io import StringIO
 
-# Initialize OpenAI API key from environment variable
-openai.api_key = os.environ["AIPROXY_TOKEN"]
+# Install necessary libraries if not already installed
+try:
+    import openai
+except ImportError:
+    os.system("pip install openai")
+    import openai
 
-def load_data(filename):
-    """Load CSV data."""
+try:
+    from IPython.display import Markdown, display
+except ImportError:
+    os.system("pip install IPython")
+    from IPython.display import Markdown, display
+
+
+def analyze_and_narrate(csv_filename):
     try:
-        data = pd.read_csv(filename)
-        return data
-    except Exception as e:
-        print(f"Error loading data: {e}")
-        return None
+        # Read the CSV file into a Pandas DataFrame
+        df = pd.read_csv(csv_filename)
+    except FileNotFoundError:
+        return "Error: CSV file not found."
 
-def analyze_data(data):
-    """Perform basic analysis on the dataset."""
-    # Summary statistics
-    summary_stats = data.describe(include='all')
-    
-    # Missing values
-    missing_values = data.isnull().sum()
-    
-    # Correlation matrix
-    correlation_matrix = data.corr()
-    
-    # Check for outliers (using Z-score method)
-    z_scores = np.abs((data - data.mean()) / data.std())
-    outliers = (z_scores > 3).sum()
-    
-    # Return all analysis results
-    return summary_stats, missing_values, correlation_matrix, outliers
+    # Basic data exploration and visualization (replace with more sophisticated analysis)
 
-def create_correlation_heatmap(correlation_matrix, output_filename):
-    """Create a heatmap for correlation matrix."""
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(correlation_matrix, annot=True, cmap="coolwarm", fmt='.2f')
-    plt.title("Correlation Matrix Heatmap")
-    plt.savefig(output_filename)
-    plt.close()
+    # 1. Descriptive statistics
+    description = df.describe(include='all')
 
-def send_to_llm(data_description, analysis_summary):
-    """Send the analysis results to LLM for summary and insights."""
-    prompt = f"""
-    Dataset Description: {data_description}
-    Analysis Summary: {analysis_summary}
-    Based on this, provide insights, implications, and recommendations.
-    """
-    
-    # Sending prompt to OpenAI GPT-4o-Mini model
+    # 2. Correlation Matrix (if applicable)
+    try:
+        numeric_cols = df.select_dtypes(include=['number'])
+        if not numeric_cols.empty:
+            correlation_matrix = numeric_cols.corr()
+            plt.figure(figsize=(10, 8))
+            sns.heatmap(correlation_matrix, annot=True, cmap="coolwarm", fmt=".2f")
+            plt.title("Correlation Matrix")
+            plt.savefig("correlation_matrix.png")
+    except:
+        print("No numeric columns found for correlation matrix")
+
+    # 3. Histogram or Count Plot (choose based on data)
+    try:
+        first_column = df.columns[0]
+        if pd.api.types.is_numeric_dtype(df[first_column]):
+            plt.figure(figsize=(8, 6))
+            sns.histplot(df[first_column], kde=True)
+            plt.title(f"Distribution of {first_column}")
+            plt.savefig("histogram.png")
+        else:
+            plt.figure(figsize=(8, 6))
+            sns.countplot(x=first_column, data=df)
+            plt.title(f"Count of {first_column}")
+            plt.xticks(rotation=45, ha='right')
+            plt.savefig("countplot.png")
+    except:
+        print("Error generating plot")
+
+    # Generate narrative using an LLM
+    openai.api_key = os.environ["AIPROXY_TOKEN"]
+
+    prompt = f"""Analyze the following data and create a short story based on it.
+    Data Description:\n{description.to_string()}
+
+    The data is related to: {csv_filename}
+
+    Narrative:"""
+
+
     response = openai.Completion.create(
-        model="gpt-4o-mini",
+        engine="gpt-4o-mini",
         prompt=prompt,
-        max_tokens=500
+        max_tokens=300,
+        n=1,
+        stop=None,
+        temperature=0.7,
     )
-    
-    return response.choices[0].text.strip()
+    narrative = response.choices[0].text.strip()
 
-def generate_markdown_report(data, summary_stats, missing_values, correlation_matrix, insights, charts):
-    """Generate the Markdown README report with analysis results."""
-    report = f"""
-    # Data Analysis Report
-    
-    ## Dataset Overview
-    - Number of Rows: {len(data)}
-    - Number of Columns: {data.shape[1]}
-    
-    ## Summary Statistics
-    {summary_stats}
-    
-    ## Missing Values
-    {missing_values}
-    
-    ## Outliers
-    Number of Outliers detected: {sum(outliers > 0)}
 
-    ## Correlation Matrix
-    ![Correlation Heatmap](./{charts[0]})
-    
-    ## Insights and Implications
-    {insights}
-    """
-    
-    with open("README.md", "w") as file:
-        file.write(report)
+    # Create README.md
+    readme_content = f"# Automated Data Analysis of {csv_filename}\n\n{narrative}\n\n"
 
-def main(filename):
-    """Main function to run the script."""
+    # Add images to README.md
+    if os.path.exists("correlation_matrix.png"):
+        readme_content += "![](correlation_matrix.png)\n\n"
+    if os.path.exists("histogram.png"):
+        readme_content += "![](histogram.png)\n\n"
+    if os.path.exists("countplot.png"):
+        readme_content += "![](countplot.png)\n\n"
     
-    # Load dataset
-    data = load_data(filename)
-    if data is None:
-        return
-    
-    # Perform analysis
-    summary_stats, missing_values, correlation_matrix, outliers = analyze_data(data)
-    
-    # Create correlation heatmap
-    create_correlation_heatmap(correlation_matrix, "correlation_heatmap.png")
-    
-    # Send data description and analysis summary to LLM for insights
-    data_description = f"Columns: {', '.join(data.columns)}"
-    analysis_summary = f"Summary Stats: {summary_stats.head()} Missing Values: {missing_values.head()}"
-    insights = send_to_llm(data_description, analysis_summary)
-    
-    # Generate Markdown report
-    generate_markdown_report(data, summary_stats, missing_values, correlation_matrix, insights, ["correlation_heatmap.png"])
+    with open("README.md", "w") as f:
+        f.write(readme_content)
+
+    return "Analysis complete. Check README.md"
 
 if __name__ == "__main__":
-    # Ensure a CSV filename is passed as argument
     import sys
-    if len(sys.argv) < 2:
-        print("Please provide a CSV filename.")
-    else:
-        main(sys.argv[1])
-
-
-
-
-
-
+    if len(sys.argv) != 2:
+        print("Usage: python autolysis.py <csv_filename>")
+        sys.exit(1)
+    csv_filename = sys.argv[1]
+    result = analyze_and_narrate(csv_filename)
+result
