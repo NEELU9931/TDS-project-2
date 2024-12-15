@@ -1,180 +1,140 @@
-
 # /// script
-# requires-python = ">=3.9"
+# requires-python = ">=3.11"
 # dependencies = [
-#   "pandas",
-#   "seaborn",
-#   "matplotlib",
-#   "numpy",
-#   "scipy",
-#   "openai",
-#   "scikit-learn",
-#   "requests",
-#   "ipykernel",  # Added ipykernel
+#     "httpx",
+#     "pandas",
+#     "seaborn",
+#     "matplotlib",
+#     "uvicorn",
+#     "openai",
+#     "requests"
 # ]
 # ///
 
-
 import os
-import sys
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 import openai
-import logging
+import requests
+import json
+import numpy as np
 
-# Configure logging
-logging.basicConfig(
-    filename="analysis.log",
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+# Initialize OpenAI API key from environment variable
+openai.api_key = os.environ["AIPROXY_TOKEN"]
 
-# Initialize OpenAI
-openai_api_key = os.getenv("AIPROXY_TOKEN")
-if not openai_api_key:
-    logging.error("AIPROXY_TOKEN environment variable not set.")
-    sys.exit(1)
-openai.api_key = openai_api_key
-
-def load_data(file_path):
-    """Load the dataset from a CSV file."""
-    encodings = ["utf-8", "ISO-8859-1", "Windows-1252"]
-    for encoding in encodings:
-        try:
-            data = pd.read_csv(file_path, encoding=encoding)
-            logging.info(f"Loaded dataset with {data.shape[0]} rows and {data.shape[1]} columns using {encoding} encoding.")
-            return data
-        except UnicodeDecodeError:
-            logging.warning(f"Encoding {encoding} failed. Trying next...")
-        except Exception as e:
-            logging.error(f"Error loading data with {encoding} encoding: {e}")
-    logging.error("Unable to load the dataset with tried encodings.")
-    sys.exit(1)
-
-def basic_analysis(data):
-    """Perform basic statistical analysis."""
-    analysis = {
-        "Summary Statistics": data.describe(include='all').to_dict(),
-        "Missing Values": data.isnull().sum().to_dict(),
-        "Data Types": data.dtypes.apply(str).to_dict(),
-    }
-    return analysis
-
-def extended_analysis(data):
-    """Perform additional data analysis."""
-    outlier_info = {}
-    for col in data.select_dtypes(include=["float64", "int64"]).columns:
-        q1, q3 = data[col].quantile([0.25, 0.75])
-        iqr = q3 - q1
-        outliers = data[(data[col] < q1 - 1.5 * iqr) | (data[col] > q3 + 1.5 * iqr)]
-        outlier_info[col] = len(outliers)
-
-    unique_values = {col: data[col].nunique() for col in data.select_dtypes(include=["object"]).columns}
-    return {
-        "Outlier Information": outlier_info,
-        "Unique Values": unique_values
-    }
-
-def visualize_correlation(data, output_dir, dataset_name):
-    """Generate a correlation heatmap."""
-    numeric_data = data.select_dtypes(include=['float64', 'int64'])
-    if numeric_data.empty:
-        logging.warning("No numeric data available for correlation analysis.")
-        return
-    corr = numeric_data.corr()
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(corr, annot=True, fmt=".2f", cmap="coolwarm")
-    plt.title("Correlation Matrix")
-    output_file = os.path.join(output_dir, f"{dataset_name}_heatmap.png")
-    plt.savefig(output_file)
-    plt.close()
-    logging.info(f"Correlation heatmap saved to {output_file}.")
-
-def visualize_distributions(data, output_dir, dataset_name):
-    """Generate distribution plots."""
-    for col in data.select_dtypes(include=["float64", "int64"]).columns:
-        plt.figure()
-        sns.histplot(data[col], kde=True, bins=30)
-        plt.title(f"Distribution of {col}")
-        output_file = os.path.join(output_dir, f"{dataset_name}_{col}_distribution.png")
-        plt.savefig(output_file)
-        plt.close()
-        logging.info(f"Distribution plot saved to {output_file}.")
-
-def query_llm(prompt):
-    """Query OpenAI for insights."""
+def load_data(filename):
+    """Load CSV data."""
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=1500,
-            temperature=0.7
-        )
-        return response['choices'][0]['message']['content']
+        data = pd.read_csv(filename)
+        return data
     except Exception as e:
-        logging.error(f"Error querying LLM: {e}")
-        return ""
+        print(f"Error loading data: {e}")
+        return None
 
-def narrate_story(data_info, basic_analysis, extended_analysis, insights):
-    """Generate a narrative from the analysis."""
+def analyze_data(data):
+    """Perform basic analysis on the dataset."""
+    # Summary statistics
+    summary_stats = data.describe(include='all')
+    
+    # Missing values
+    missing_values = data.isnull().sum()
+    
+    # Correlation matrix
+    correlation_matrix = data.corr()
+    
+    # Check for outliers (using Z-score method)
+    z_scores = np.abs((data - data.mean()) / data.std())
+    outliers = (z_scores > 3).sum()
+    
+    # Return all analysis results
+    return summary_stats, missing_values, correlation_matrix, outliers
+
+def create_correlation_heatmap(correlation_matrix, output_filename):
+    """Create a heatmap for correlation matrix."""
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(correlation_matrix, annot=True, cmap="coolwarm", fmt='.2f')
+    plt.title("Correlation Matrix Heatmap")
+    plt.savefig(output_filename)
+    plt.close()
+
+def send_to_llm(data_description, analysis_summary):
+    """Send the analysis results to LLM for summary and insights."""
     prompt = f"""
-    You are a data analyst assistant. Write a Markdown story for the following data analysis:
-    Dataset Information:
-    {data_info}
-    
-    Basic Analysis:
-    {basic_analysis}
-    
-    Extended Analysis:
-    {extended_analysis}
-    
-    Key Insights:
-    {insights}
-    
-    Please include headers and structure it well for a README.md file.
+    Dataset Description: {data_description}
+    Analysis Summary: {analysis_summary}
+    Based on this, provide insights, implications, and recommendations.
     """
-    return query_llm(prompt)
+    
+    # Sending prompt to OpenAI GPT-4o-Mini model
+    response = openai.Completion.create(
+        model="gpt-4o-mini",
+        prompt=prompt,
+        max_tokens=500
+    )
+    
+    return response.choices[0].text.strip()
 
-def save_story(story, output_dir):
-    """Save the narrative to a README.md file."""
-    output_file = os.path.join(output_dir, "README.md")
-    with open(output_file, "w") as f:
-        f.write(story)
-    logging.info(f"Narrative saved to {output_file}.")
+def generate_markdown_report(data, summary_stats, missing_values, correlation_matrix, insights, charts):
+    """Generate the Markdown README report with analysis results."""
+    report = f"""
+    # Data Analysis Report
+    
+    ## Dataset Overview
+    - Number of Rows: {len(data)}
+    - Number of Columns: {data.shape[1]}
+    
+    ## Summary Statistics
+    {summary_stats}
+    
+    ## Missing Values
+    {missing_values}
+    
+    ## Outliers
+    Number of Outliers detected: {sum(outliers > 0)}
 
-def main():
-    if len(sys.argv) != 2:
-        logging.error("Usage: uv run autolysis.py <dataset.csv>")
-        sys.exit(1)
+    ## Correlation Matrix
+    ![Correlation Heatmap](./{charts[0]})
+    
+    ## Insights and Implications
+    {insights}
+    """
+    
+    with open("README.md", "w") as file:
+        file.write(report)
 
-    file_path = sys.argv[1]
-    dataset_name = os.path.splitext(os.path.basename(file_path))[0]
-    output_dir = os.path.join(os.getcwd(), dataset_name)
-
-    # Create output directory
-    os.makedirs(output_dir, exist_ok=True)
-
-    data = load_data(file_path)
-
-    # Basic analysis
-    analysis = basic_analysis(data)
-    extended = extended_analysis(data)
-
-    # Visualizations
-    visualize_correlation(data, output_dir, dataset_name)
-    visualize_distributions(data, output_dir, dataset_name)
-
-    # Generate story
-    data_info = {
-        "Columns": data.columns.tolist(),
-        "Shape": data.shape,
-    }
-    insights = "The analysis provided insights into data patterns, correlations, and outliers."
-    story = narrate_story(data_info, analysis, extended, insights)
-
-    # Save results
-    save_story(story, output_dir)
+def main(filename):
+    """Main function to run the script."""
+    
+    # Load dataset
+    data = load_data(filename)
+    if data is None:
+        return
+    
+    # Perform analysis
+    summary_stats, missing_values, correlation_matrix, outliers = analyze_data(data)
+    
+    # Create correlation heatmap
+    create_correlation_heatmap(correlation_matrix, "correlation_heatmap.png")
+    
+    # Send data description and analysis summary to LLM for insights
+    data_description = f"Columns: {', '.join(data.columns)}"
+    analysis_summary = f"Summary Stats: {summary_stats.head()} Missing Values: {missing_values.head()}"
+    insights = send_to_llm(data_description, analysis_summary)
+    
+    # Generate Markdown report
+    generate_markdown_report(data, summary_stats, missing_values, correlation_matrix, insights, ["correlation_heatmap.png"])
 
 if __name__ == "__main__":
-    main()
+    # Ensure a CSV filename is passed as argument
+    import sys
+    if len(sys.argv) < 2:
+        print("Please provide a CSV filename.")
+    else:
+        main(sys.argv[1])
+
+
+
+
+
+
